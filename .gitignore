@@ -1,0 +1,22 @@
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# notebooks
+.ipynb_checkpoints/
+
+# data/artifacts (do NOT push dataset)
+data/
+datasets/
+*.npy
+*.npz
+*.pkl
+*.h5
+*.pt
+
+# env
+.env
+.venv/
+venv/

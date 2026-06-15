@@ -4,7 +4,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 
-# Allow app/streamlit_app.py to import from src/
 ROOT_DIR = Path(__file__).resolve().parents[1]
 sys.path.append(str(ROOT_DIR))
 
@@ -44,66 +43,113 @@ def load_predictions(selected_split):
     return predict_split(split=selected_split)
 
 
-def show_prediction_header(sample):
-    st.subheader("1. Prediction Result")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        st.metric("True Emotion", sample.get("emotion", "N/A"))
-
-    with col2:
-        st.metric("Predicted Emotion", sample["final_predicted_emotion"])
-
-    with col3:
-        st.metric("Engagement Level", sample["predicted_engagement_level_final"])
-
-    stack_cols = [f"stack_prob_{e}" for e in LABEL_ORDER]
-    confidence = max([sample[col] for col in stack_cols])
-
-    with col4:
-        st.metric("Confidence Score", f"{confidence * 100:.2f}%")
-
-
-def show_probability_outputs(sample):
-    st.subheader("2. Modality Probability Outputs")
-
-    video_cols = [f"video_prob_{e}" for e in LABEL_ORDER]
-    audio_cols = [f"audio_prob_{e}" for e in LABEL_ORDER]
-    stack_cols = [f"stack_prob_{e}" for e in LABEL_ORDER]
-
-    probability_table = pd.DataFrame(
-        {
-            "emotion": LABEL_ORDER,
-            "video_probability": [sample[col] for col in video_cols],
-            "audio_probability": [sample[col] for col in audio_cols],
-            "final_fusion_probability": [sample[col] for col in stack_cols],
-        }
+@st.cache_data(show_spinner=False)
+def run_uploaded_video_analysis_cached(
+    video_path_str,
+    segment_seconds,
+    file_size,
+    file_mtime,
+):
+    return process_classroom_video(
+        video_path=Path(video_path_str),
+        segment_seconds=segment_seconds,
     )
 
-    st.dataframe(probability_table, width="stretch")
+
+def get_overall_feedback(engagement_level):
+    if engagement_level == "Engaged":
+        return (
+            "Overall classroom engagement is strong. Students appear attentive or actively involved. "
+            "Continue discussion-based teaching and use follow-up legal reasoning questions "
+            "to sustain participation."
+        )
+
+    if engagement_level == "Moderately Engaged":
+        return (
+            "Overall classroom engagement is moderate. Introduce an interactive activity such as "
+            "a short debate prompt, case-law question, quick student response, or practical legal "
+            "scenario to increase participation."
+        )
+
+    if engagement_level == "Disengaged":
+        return (
+            "Overall classroom engagement appears low. Shift to a more active learning strategy, "
+            "such as role-play, a moot-court style prompt, or a real-world legal problem to regain attention."
+        )
+
+    return (
+        "Engagement could not be clearly determined. Review the classroom recording quality "
+        "and repeat the analysis if needed."
+    )
+
+
+def build_engagement_summary(predictions):
+    summary = (
+        predictions["predicted_engagement_level_final"]
+        .value_counts()
+        .reset_index()
+    )
+
+    summary.columns = ["engagement_level", "count"]
+    summary["percentage"] = (
+        summary["count"] / summary["count"].sum() * 100
+    ).round(2)
+
+    return summary
+
+
+def show_overall_predicted_engagement_summary(
+    predictions,
+    count_label="Analysed Samples",
+):
+    st.subheader("1. Overall Predicted Engagement Summary")
+
+    summary = build_engagement_summary(predictions)
+
+    st.dataframe(summary, width="stretch")
+    st.bar_chart(summary.set_index("engagement_level")["percentage"])
+
+    dominant_engagement = summary.iloc[0]["engagement_level"]
+    dominant_percentage = summary.iloc[0]["percentage"]
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.markdown("#### Video Emotion Probabilities")
-        st.bar_chart(probability_table.set_index("emotion")[["video_probability"]])
+        st.metric("Dominant Engagement", dominant_engagement)
 
     with col2:
-        st.markdown("#### Audio Emotion Probabilities")
-        st.bar_chart(probability_table.set_index("emotion")[["audio_probability"]])
+        st.metric("Dominant Percentage", f"{dominant_percentage:.2f}%")
 
     with col3:
-        st.markdown("#### Final Fused Emotion Probabilities")
-        st.bar_chart(
-            probability_table.set_index("emotion")[["final_fusion_probability"]]
-        )
+        st.metric(count_label, len(predictions))
+
+    st.info(
+        "The dominant engagement level represents the overall predicted classroom "
+        "engagement across all analysed samples or video segments."
+    )
+
+    return summary, dominant_engagement, dominant_percentage
 
 
-def show_shap_section(selected_sample_id, split):
+def show_overall_feedback(engagement_level):
+    st.subheader("2. Overall Lecturer Feedback")
+
+    feedback = get_overall_feedback(engagement_level)
+
+    if engagement_level == "Engaged":
+        st.success(feedback)
+    elif engagement_level == "Moderately Engaged":
+        st.warning(feedback)
+    elif engagement_level == "Disengaged":
+        st.error(feedback)
+    else:
+        st.info(feedback)
+
+
+def show_dataset_shap_section(selected_sample_id, split):
     st.subheader("3. XAI Explanation using SHAP")
 
-    show_shap = st.checkbox("Show SHAP explanation for this sample", value=True)
+    show_shap = st.checkbox("Show SHAP explanation", value=True)
 
     if not show_shap:
         return
@@ -117,7 +163,7 @@ def show_shap_section(selected_sample_id, split):
 
         st.write(
             f"SHAP explains why the fusion model predicted "
-            f"**{shap_result['predicted_emotion']}** for this sample."
+            f"**{shap_result['predicted_emotion']}** for the selected representative sample."
         )
 
         col_a, col_b = st.columns(2)
@@ -178,102 +224,251 @@ def show_shap_section(selected_sample_id, split):
         )
 
     except Exception as error:
-        st.warning("SHAP explanation could not be generated for this sample.")
+        st.warning("SHAP explanation could not be generated.")
         st.exception(error)
 
 
-def show_feedback_section(sample):
-    st.subheader("4. Lecturer Feedback")
+def show_upload_xai_section(segment_results):
+    st.subheader("3. XAI Explanation using SHAP")
 
-    engagement_level = sample["predicted_engagement_level_final"]
-    feedback = sample["logic_based_feedback_final"]
+    st.info(
+        "For uploaded classroom videos, the explanation is summarised at classroom level "
+        "using the final fused emotion probabilities generated for each 5-second segment. "
+        "The dataset demo provides the detailed SHAP breakdown for saved evaluation samples."
+    )
 
-    if engagement_level == "Engaged":
-        st.success(feedback)
-    elif engagement_level == "Moderately Engaged":
-        st.warning(feedback)
-    elif engagement_level == "Disengaged":
-        st.error(feedback)
-    else:
-        st.info(feedback)
+    final_prob_cols = [f"final_prob_{emotion}" for emotion in LABEL_ORDER]
+    available_final_cols = [col for col in final_prob_cols if col in segment_results.columns]
 
+    video_prob_cols = [f"video_prob_{emotion}" for emotion in LABEL_ORDER]
+    audio_prob_cols = [f"audio_prob_{emotion}" for emotion in LABEL_ORDER]
 
-def show_engagement_summary(predictions):
-    st.subheader("5. Engagement Summary")
+    available_video_cols = [col for col in video_prob_cols if col in segment_results.columns]
+    available_audio_cols = [col for col in audio_prob_cols if col in segment_results.columns]
 
-    summary = (
-        predictions["predicted_engagement_level_final"]
+    if available_final_cols:
+        emotion_summary = pd.DataFrame(
+            {
+                "emotion": LABEL_ORDER,
+                "average_final_probability": [
+                    segment_results[f"final_prob_{emotion}"].mean()
+                    if f"final_prob_{emotion}" in segment_results.columns
+                    else 0.0
+                    for emotion in LABEL_ORDER
+                ],
+            }
+        )
+
+        emotion_summary["average_final_probability"] = (
+            emotion_summary["average_final_probability"] * 100
+        ).round(2)
+
+        st.markdown("#### Overall Emotion Contribution")
+        st.dataframe(emotion_summary, width="stretch")
+        st.bar_chart(
+            emotion_summary.set_index("emotion")["average_final_probability"]
+        )
+
+    if available_video_cols and available_audio_cols:
+        video_strength = segment_results[available_video_cols].max(axis=1).mean()
+        audio_strength = segment_results[available_audio_cols].max(axis=1).mean()
+
+        modality_df = pd.DataFrame(
+            {
+                "modality": ["Video", "Audio"],
+                "average_confidence_strength": [
+                    round(video_strength * 100, 2),
+                    round(audio_strength * 100, 2),
+                ],
+            }
+        )
+
+        st.markdown("#### Modality Contribution")
+        st.dataframe(modality_df, width="stretch")
+        st.bar_chart(
+            modality_df.set_index("modality")["average_confidence_strength"]
+        )
+
+    top_emotions = (
+        segment_results["final_predicted_emotion"]
         .value_counts()
         .reset_index()
     )
+    top_emotions.columns = ["predicted_emotion", "segment_count"]
 
-    summary.columns = ["engagement_level", "count"]
-    summary["percentage"] = (
-        summary["count"] / summary["count"].sum() * 100
-    ).round(2)
+    st.markdown("#### Most Frequent Predicted Emotions")
+    st.dataframe(top_emotions, width="stretch")
 
-    st.dataframe(summary, width="stretch")
 
-    st.bar_chart(summary.set_index("engagement_level")["percentage"])
+def show_dataset_modality_probability_outputs(sample):
+    st.subheader("4. Modality Probability Outputs")
+
+    video_cols = [f"video_prob_{e}" for e in LABEL_ORDER]
+    audio_cols = [f"audio_prob_{e}" for e in LABEL_ORDER]
+    stack_cols = [f"stack_prob_{e}" for e in LABEL_ORDER]
+
+    probability_table = pd.DataFrame(
+        {
+            "emotion": LABEL_ORDER,
+            "video_probability": [sample[col] for col in video_cols],
+            "audio_probability": [sample[col] for col in audio_cols],
+            "final_fusion_probability": [sample[col] for col in stack_cols],
+        }
+    )
+
+    st.dataframe(probability_table, width="stretch")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("#### Video Emotion Probabilities")
+        st.bar_chart(probability_table.set_index("emotion")[["video_probability"]])
+
+    with col2:
+        st.markdown("#### Audio Emotion Probabilities")
+        st.bar_chart(probability_table.set_index("emotion")[["audio_probability"]])
+
+    with col3:
+        st.markdown("#### Final Fused Emotion Probabilities")
+        st.bar_chart(
+            probability_table.set_index("emotion")[["final_fusion_probability"]]
+        )
+
+
+def show_upload_modality_probability_outputs(segment_results):
+    st.subheader("4. Modality Probability Outputs")
+
+    video_prob_cols = [f"video_prob_{emotion}" for emotion in LABEL_ORDER]
+    audio_prob_cols = [f"audio_prob_{emotion}" for emotion in LABEL_ORDER]
+    final_prob_cols = [f"final_prob_{emotion}" for emotion in LABEL_ORDER]
+
+    probability_table = pd.DataFrame(
+        {
+            "emotion": LABEL_ORDER,
+            "average_video_probability": [
+                segment_results[f"video_prob_{emotion}"].mean()
+                if f"video_prob_{emotion}" in segment_results.columns
+                else 0.0
+                for emotion in LABEL_ORDER
+            ],
+            "average_audio_probability": [
+                segment_results[f"audio_prob_{emotion}"].mean()
+                if f"audio_prob_{emotion}" in segment_results.columns
+                else 0.0
+                for emotion in LABEL_ORDER
+            ],
+            "average_final_probability": [
+                segment_results[f"final_prob_{emotion}"].mean()
+                if f"final_prob_{emotion}" in segment_results.columns
+                else 0.0
+                for emotion in LABEL_ORDER
+            ],
+        }
+    )
+
+    probability_table[
+        [
+            "average_video_probability",
+            "average_audio_probability",
+            "average_final_probability",
+        ]
+    ] = probability_table[
+        [
+            "average_video_probability",
+            "average_audio_probability",
+            "average_final_probability",
+        ]
+    ].round(4)
+
+    st.dataframe(probability_table, width="stretch")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("#### Video")
+        st.bar_chart(
+            probability_table.set_index("emotion")[["average_video_probability"]]
+        )
+
+    with col2:
+        st.markdown("#### Audio")
+        st.bar_chart(
+            probability_table.set_index("emotion")[["average_audio_probability"]]
+        )
+
+    with col3:
+        st.markdown("#### Final")
+        st.bar_chart(
+            probability_table.set_index("emotion")[["average_final_probability"]]
+        )
 
 
 def show_all_predictions(predictions):
-    with st.expander("View All Predictions"):
-        st.dataframe(
-            predictions[
-                [
-                    "sample_id",
-                    "emotion",
-                    "final_predicted_emotion",
-                    "predicted_engagement_level_final",
-                    "logic_based_feedback_final",
-                ]
-            ],
-            width="stretch",
-        )
+    with st.expander("View full prediction table"):
+        st.dataframe(predictions, width="stretch")
 
 
-def get_overall_feedback(engagement_level):
-    if engagement_level == "Engaged":
-        return (
-            "Overall classroom engagement is strong. Continue the current teaching flow, "
-            "maintain discussion-based interaction, and use follow-up legal reasoning "
-            "questions to sustain participation."
-        )
+def show_loading_animation():
+    return st.empty()
 
-    if engagement_level == "Moderately Engaged":
-        return (
-            "Overall classroom engagement is moderate. Introduce an interactive activity "
-            "such as a short debate prompt, case-law question, quick student response, "
-            "or practical legal scenario to increase participation."
-        )
 
-    if engagement_level == "Disengaged":
-        return (
-            "Overall classroom engagement appears low. Shift to a more active learning "
-            "strategy, such as role-play, a moot-court style prompt, or a real-world "
-            "legal problem to regain attention."
-        )
+def render_loading_animation(container):
+    container.markdown(
+        """
+        <style>
+        .analysis-wrapper {
+            background-color: #111827;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 22px;
+            margin-top: 18px;
+            margin-bottom: 18px;
+        }
 
-    return (
-        "Engagement could not be clearly determined. Review the classroom recording "
-        "quality and consider using a clearer audio/video sample."
+        .analysis-loader {
+            border: 6px solid #334155;
+            border-top: 6px solid #38bdf8;
+            border-radius: 50%;
+            width: 48px;
+            height: 48px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            margin-right: 18px;
+        }
+
+        .analysis-text {
+            display: inline-block;
+            vertical-align: middle;
+            color: #e5e7eb;
+            font-size: 19px;
+            font-weight: 600;
+        }
+
+        .analysis-subtext {
+            color: #9ca3af;
+            font-size: 14px;
+            margin-top: 12px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        </style>
+
+        <div class="analysis-wrapper">
+            <div class="analysis-loader"></div>
+            <div class="analysis-text">
+                Analysing classroom engagement using 5-second audio-video segments...
+            </div>
+            <div class="analysis-subtext">
+                The system is processing visual cues, audio cues, fusion prediction, and lecturer feedback.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-
-
-def show_overall_feedback(engagement_level):
-    st.subheader("3. Overall Lecturer Feedback")
-
-    feedback = get_overall_feedback(engagement_level)
-
-    if engagement_level == "Engaged":
-        st.success(feedback)
-    elif engagement_level == "Moderately Engaged":
-        st.warning(feedback)
-    elif engagement_level == "Disengaged":
-        st.error(feedback)
-    else:
-        st.info(feedback)
 
 
 if mode == "Dataset Demo":
@@ -297,22 +492,22 @@ if mode == "Dataset Demo":
             f"Loaded {len(predictions)} fused predictions from the {split} split."
         )
 
-        sample_ids = predictions["sample_id"].astype(str).tolist()
-
-        selected_sample_id = st.sidebar.selectbox(
-            "Select sample ID",
-            sample_ids,
+        summary, dominant_engagement, dominant_percentage = (
+            show_overall_predicted_engagement_summary(
+                predictions,
+                count_label="Analysed Samples",
+            )
         )
 
-        sample = predictions[
-            predictions["sample_id"].astype(str) == selected_sample_id
-        ].iloc[0]
+        show_overall_feedback(dominant_engagement)
 
-        show_prediction_header(sample)
-        show_probability_outputs(sample)
-        show_shap_section(selected_sample_id, split)
-        show_feedback_section(sample)
-        show_engagement_summary(predictions)
+        sample = predictions.iloc[0]
+        selected_sample_id = str(sample["sample_id"])
+
+        show_dataset_shap_section(selected_sample_id, split)
+
+        show_dataset_modality_probability_outputs(sample)
+
         show_all_predictions(predictions)
 
     except Exception as error:
@@ -325,7 +520,7 @@ elif mode == "Upload Classroom Video":
 
     st.write(
         "Upload an online law classroom video. The system will split the video into "
-        "short time windows, analyse available audio and visual cues, predict emotion, "
+        "5-second time windows, analyse available audio and visual cues, predict emotion, "
         "map the emotion into an engagement level, and generate lecturer feedback."
     )
 
@@ -338,13 +533,8 @@ elif mode == "Upload Classroom Video":
         "Segment length for analysis",
         min_value=5,
         max_value=30,
-        value=30,
+        value=5,
         step=5,
-    )
-
-    st.info(
-        "Recommended first test: use a short 20–30 second video. "
-        "For longer videos, use 30-second segments to reduce processing time."
     )
 
     if uploaded_video is not None:
@@ -359,70 +549,81 @@ elif mode == "Upload Classroom Video":
                 with open(saved_video_path, "wb") as file:
                     file.write(uploaded_video.getbuffer())
 
-                with st.spinner(
-                    "Processing video. This may take a few minutes, "
-                    "especially during the first run..."
-                ):
-                    segment_results, engagement_summary = process_classroom_video(
-                        video_path=saved_video_path,
-                        segment_seconds=segment_seconds,
+                file_size = saved_video_path.stat().st_size
+                file_mtime = saved_video_path.stat().st_mtime
+
+                loading_container = show_loading_animation()
+                render_loading_animation(loading_container)
+
+                progress_bar = st.progress(
+                    0,
+                    text="Starting classroom engagement analysis...",
+                )
+
+                with st.status(
+                    "Running multimodal engagement analysis...",
+                    expanded=True,
+                ) as status:
+                    st.write("Step 1/4: Uploaded classroom video saved.")
+                    progress_bar.progress(
+                        15,
+                        text="Video saved successfully.",
                     )
+
+                    st.write("Step 2/4: Loading trained video, audio, and fusion models.")
+                    progress_bar.progress(
+                        35,
+                        text="Loading model pipeline.",
+                    )
+
+                    st.write("Step 3/4: Processing 5-second audio-video segments.")
+                    progress_bar.progress(
+                        55,
+                        text="Analysing segment-level engagement cues.",
+                    )
+
+                    segment_results, engagement_summary = run_uploaded_video_analysis_cached(
+                        str(saved_video_path),
+                        segment_seconds,
+                        file_size,
+                        file_mtime,
+                    )
+
+                    st.write("Step 4/4: Generating engagement summary and lecturer feedback.")
+                    progress_bar.progress(
+                        90,
+                        text="Preparing dashboard outputs.",
+                    )
+
+                    status.update(
+                        label="Multimodal engagement analysis completed.",
+                        state="complete",
+                        expanded=False,
+                    )
+
+                progress_bar.progress(
+                    100,
+                    text="Analysis completed.",
+                )
+
+                loading_container.empty()
 
                 st.success("Video analysis completed.")
 
-                st.subheader("1. Overall Engagement Summary")
-
-                st.dataframe(engagement_summary, width="stretch")
-
-                st.bar_chart(
-                    engagement_summary.set_index("engagement_level")["percentage"]
+                summary, dominant_engagement, dominant_percentage = (
+                    show_overall_predicted_engagement_summary(
+                        segment_results,
+                        count_label="Analysed Segments",
+                    )
                 )
-
-                dominant_engagement = engagement_summary.iloc[0]["engagement_level"]
-                dominant_percentage = engagement_summary.iloc[0]["percentage"]
-
-                col1, col2, col3 = st.columns(3)
-
-                with col1:
-                    st.metric("Dominant Engagement", dominant_engagement)
-
-                with col2:
-                    st.metric("Dominant Percentage", f"{dominant_percentage:.2f}%")
-
-                with col3:
-                    st.metric("Analysed Segments", len(segment_results))
-
-                st.info(
-                    "The dominant engagement level represents the overall classroom "
-                    "engagement across all analysed video segments."
-                )
-
-                st.subheader("2. Engagement Timeline")
-
-                timeline_view = segment_results[
-                    [
-                        "segment_id",
-                        "start_time",
-                        "end_time",
-                        "video_status",
-                        "audio_status",
-                        "prediction_mode",
-                        "final_predicted_emotion",
-                        "predicted_engagement_level_final",
-                        "confidence",
-                    ]
-                ].copy()
-
-                timeline_view["confidence"] = (
-                    timeline_view["confidence"] * 100
-                ).round(2)
-
-                st.dataframe(timeline_view, width="stretch")
 
                 show_overall_feedback(dominant_engagement)
 
-                with st.expander("View technical segment prediction table"):
-                    st.dataframe(segment_results, width="stretch")
+                show_upload_xai_section(segment_results)
+
+                show_upload_modality_probability_outputs(segment_results)
+
+                show_all_predictions(segment_results)
 
             except Exception as error:
                 st.error("Uploaded video analysis failed.")

@@ -1,0 +1,14 @@
+numpy
+pandas
+scikit-learn
+joblib
+matplotlib
+streamlit
+opencv-python
+tensorflow
+librosa
+soundfile
+torch
+transformers
+tqdm
+shap

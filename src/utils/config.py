@@ -1,46 +1,55 @@
-import os
+from pathlib import Path
 
+# Root project folder: FYP/
+BASE_DIR = Path(__file__).resolve().parents[2]
 
-DATASET_ROOT = r"C:\Users\user\Desktop\dataset"
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+DATA_DIR = BASE_DIR / "data"
+PROCESSED_DIR = DATA_DIR / "processed"
 
-# Processed outputs inside your repo
-PROCESSED_DIR = os.path.join(PROJECT_ROOT, "data", "processed")
-VIDEO_FACES_DIR = os.path.join(PROCESSED_DIR, "video_faces")
+NOTEBOOK_DIR = DATA_DIR / "notebooks"
 
-# CSVs
-RAVDESS_INDEX_CSV = os.path.join(PROCESSED_DIR, "ravdess_index.csv")
-FACES_LABELED_CSV = os.path.join(VIDEO_FACES_DIR, "faces_labeled.csv")
-FACES_TRAIN_CSV   = os.path.join(VIDEO_FACES_DIR, "faces_train.csv")
-FACES_VAL_CSV     = os.path.join(VIDEO_FACES_DIR, "faces_val.csv")
-FACES_TEST_CSV    = os.path.join(VIDEO_FACES_DIR, "faces_test.csv")
+VIDEO_PROB_PATH = PROCESSED_DIR / "video_sample_probabilities_all.csv"
 
-# Feature outputs (.npy)
-X_TRAIN_VIDEO_NPY = os.path.join(PROCESSED_DIR, "X_train_video.npy")
-Y_TRAIN_VIDEO_NPY = os.path.join(PROCESSED_DIR, "y_train_video.npy")
-X_VAL_VIDEO_NPY   = os.path.join(PROCESSED_DIR, "X_val_video.npy")
-Y_VAL_VIDEO_NPY   = os.path.join(PROCESSED_DIR, "y_val_video.npy")
-X_TEST_VIDEO_NPY  = os.path.join(PROCESSED_DIR, "X_test_video.npy")
-Y_TEST_VIDEO_NPY  = os.path.join(PROCESSED_DIR, "y_test_video.npy")
+FINAL_AUDIO_PROB_DIR = PROCESSED_DIR / "final_audio_probabilities"
 
-# Image/face extraction settings
-IMG_SIZE = 224
-EVERY_N_FRAMES = 5      # extract 1 face every 5 frames
-FACE_MIN_SIZE = 60      # ignore tiny detections
+FUSION_EXPERIMENT_DIR = PROCESSED_DIR / "fusion_experiments"
+FINAL_FUSION_MODEL_DIR = FUSION_EXPERIMENT_DIR / "final_stacking_fusion_model"
 
-# Split ratios
-TRAIN_RATIO = 0.70
-VAL_RATIO = 0.15
-TEST_RATIO = 0.15
-RANDOM_SEED = 42
+FINAL_FUSION_MODEL_PATH = (
+    FINAL_FUSION_MODEL_DIR / "stacking_logistic_regression_fusion_model.joblib"
+)
 
+FINAL_ENGAGEMENT_TEST_CSV = (
+    FINAL_FUSION_MODEL_DIR / "final_engagement_predictions_literature_aligned_test.csv"
+)
 
-# Audio feature paths
-X_TRAIN_AUDIO_NPY = os.path.join(PROCESSED_DIR, "X_train_audio.npy")
-Y_TRAIN_AUDIO_NPY = os.path.join(PROCESSED_DIR, "y_train_audio.npy")
+LABEL_ORDER = [
+    "neutral",
+    "calm",
+    "happy",
+    "sad",
+    "angry",
+    "fearful",
+    "disgust",
+    "surprised",
+]
 
-X_VAL_AUDIO_NPY = os.path.join(PROCESSED_DIR, "X_val_audio.npy")
-Y_VAL_AUDIO_NPY = os.path.join(PROCESSED_DIR, "y_val_audio.npy")
+EMOTION_MAP = {
+    "01": "neutral",
+    "02": "calm",
+    "03": "happy",
+    "04": "sad",
+    "05": "angry",
+    "06": "fearful",
+    "07": "disgust",
+    "08": "surprised",
+}
 
-X_TEST_AUDIO_NPY = os.path.join(PROCESSED_DIR, "X_test_audio.npy")
-Y_TEST_AUDIO_NPY = os.path.join(PROCESSED_DIR, "y_test_audio.npy")
+VIDEO_MODEL_PATH = PROCESSED_DIR / "rf_video_model.pkl"
+
+FINAL_AUDIO_MODEL_DIR = PROCESSED_DIR / "final_audio_model"
+FINAL_AUDIO_MODEL_PATH = FINAL_AUDIO_MODEL_DIR / "final_selected_audio_model.joblib"
+FINAL_AUDIO_METADATA_PATH = FINAL_AUDIO_MODEL_DIR / "final_selected_audio_model_metadata.json"
+
+UPLOAD_DIR = DATA_DIR / "uploads"
+TEMP_SEGMENT_DIR = PROCESSED_DIR / "uploaded_video_segments"

@@ -1,86 +1,110 @@
-import os
 import argparse
+from pathlib import Path
+
+import cv2
 import numpy as np
 import pandas as pd
-import cv2
-from tqdm import tqdm
-
 import tensorflow as tf
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from tqdm import tqdm
 
-from src.utils import config
 
+def build_feature_extractor(image_size: int = 224):
+    base_model = MobileNetV2(
+        weights="imagenet",
+        include_top=False,
+        input_shape=(image_size, image_size, 3),
+    )
 
-def build_feature_extractor():
-    base = MobileNetV2(weights="imagenet", include_top=False, input_shape=(config.IMG_SIZE, config.IMG_SIZE, 3))
-    x = tf.keras.layers.GlobalAveragePooling2D()(base.output)
-    model = tf.keras.Model(inputs=base.input, outputs=x)
+    pooled = tf.keras.layers.GlobalAveragePooling2D()(base_model.output)
+
+    model = tf.keras.Model(
+        inputs=base_model.input,
+        outputs=pooled,
+    )
+
     return model
 
 
-def load_and_preprocess(img_path: str):
-    img = cv2.imread(img_path)
-    if img is None:
-        raise FileNotFoundError(f"Image not found: {img_path}")
-    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (config.IMG_SIZE, config.IMG_SIZE))
-    img = preprocess_input(img.astype(np.float32))
-    return img
+def load_and_preprocess_image(image_path: str, image_size: int = 224):
+    image = cv2.imread(image_path)
+
+    if image is None:
+        raise FileNotFoundError(f"Image not found: {image_path}")
+
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = cv2.resize(image, (image_size, image_size))
+    image = image.astype(np.float32)
+
+    image = preprocess_input(image)
+
+    return image
 
 
-def extract_from_csv(csv_path: str, out_x: str, out_y: str, batch_size: int = 32):
-    df = pd.read_csv(csv_path)
-    extractor = build_feature_extractor()
+def extract_video_features(
+    faces_csv: str,
+    output_x: str,
+    output_y: str,
+    batch_size: int = 32,
+    image_size: int = 224,
+):
+    df = pd.read_csv(faces_csv)
 
-    X = []
-    y = []
+    if "face_path" not in df.columns:
+        raise ValueError("faces_csv must contain a face_path column.")
 
-    batch_imgs = []
-    batch_labels = []
+    if "emotion" not in df.columns:
+        raise ValueError("faces_csv must contain an emotion column.")
 
-    for _, row in tqdm(df.iterrows(), total=len(df), desc=f"Extracting {os.path.basename(csv_path)}"):
-        img = load_and_preprocess(row["face_path"])
-        batch_imgs.append(img)
-        batch_labels.append(row["emotion"])
+    extractor = build_feature_extractor(image_size=image_size)
 
-        if len(batch_imgs) == batch_size:
-            batch_arr = np.array(batch_imgs)
-            feats = extractor.predict(batch_arr, verbose=0)
-            X.append(feats)
-            y.extend(batch_labels)
-            batch_imgs, batch_labels = [], []
+    images = []
+    labels = []
 
-    # last batch
-    if len(batch_imgs) > 0:
-        batch_arr = np.array(batch_imgs)
-        feats = extractor.predict(batch_arr, verbose=0)
-        X.append(feats)
-        y.extend(batch_labels)
+    for _, row in tqdm(df.iterrows(), total=len(df), desc="Loading face images"):
+        try:
+            image = load_and_preprocess_image(row["face_path"], image_size=image_size)
+            images.append(image)
+            labels.append(row["emotion"])
+        except Exception as error:
+            print("Skipped:", row["face_path"], "|", error)
 
-    X = np.vstack(X)  # (N, 1280)
-    y = np.array(y)
+    X_images = np.array(images, dtype=np.float32)
 
-    os.makedirs(os.path.dirname(out_x), exist_ok=True)
-    np.save(out_x, X)
-    np.save(out_y, y)
+    features = extractor.predict(
+        X_images,
+        batch_size=batch_size,
+        verbose=1,
+    )
 
-    print("✅ Saved:", out_x, out_y)
-    print("Shapes:", X.shape, y.shape)
+    y = np.array(labels)
+
+    Path(output_x).parent.mkdir(parents=True, exist_ok=True)
+
+    np.save(output_x, features)
+    np.save(output_y, y)
+
+    print("Saved X:", output_x, features.shape)
+    print("Saved y:", output_y, y.shape)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--split", choices=["train", "val", "test", "all"], default="all")
-    parser.add_argument("--batch_size", type=int, default=32)
+
+    parser.add_argument("--faces-csv", default="data/processed/video_faces_index.csv")
+    parser.add_argument("--output-x", default="data/processed/X_video_features.npy")
+    parser.add_argument("--output-y", default="data/processed/y_video_labels.npy")
+    parser.add_argument("--batch-size", type=int, default=32)
+
     args = parser.parse_args()
 
-    if args.split in ["train", "all"]:
-        extract_from_csv(config.FACES_TRAIN_CSV, config.X_TRAIN_VIDEO_NPY, config.Y_TRAIN_VIDEO_NPY, args.batch_size)
-    if args.split in ["val", "all"]:
-        extract_from_csv(config.FACES_VAL_CSV, config.X_VAL_VIDEO_NPY, config.Y_VAL_VIDEO_NPY, args.batch_size)
-    if args.split in ["test", "all"]:
-        extract_from_csv(config.FACES_TEST_CSV, config.X_TEST_VIDEO_NPY, config.Y_TEST_VIDEO_NPY, args.batch_size)
+    extract_video_features(
+        faces_csv=args.faces_csv,
+        output_x=args.output_x,
+        output_y=args.output_y,
+        batch_size=args.batch_size,
+    )
 
 
 if __name__ == "__main__":

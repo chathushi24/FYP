@@ -1,0 +1,48 @@
+{
+  "model_type": "HuBERT + SVM (augmented x2)",
+  "val_accuracy": 0.4398,
+  "test_accuracy": 0.4329,
+  "timestamp": "20260106_132252",
+  "augmentation": "noise + pitch + reverb",
+  "labels": [
+    "angry",
+    "calm",
+    "disgust",
+    "fearful",
+    "happy",
+    "neutral",
+    "sad",
+    "surprised"
+  ],
+  "label_to_id": {
+    "angry": 0,
+    "calm": 1,
+    "disgust": 2,
+    "fearful": 3,
+    "happy": 4,
+    "neutral": 5,
+    "sad": 6,
+    "surprised": 7
+  },
+  "id_to_label": {
+    "0": "angry",
+    "1": "calm",
+    "2": "disgust",
+    "3": "fearful",
+    "4": "happy",
+    "5": "neutral",
+    "6": "sad",
+    "7": "surprised"
+  },
+  "feat_kwargs": {
+    "target_sec": 3.0,
+    "top_db": 25,
+    "win_sec": 1.0,
+    "hop_sec": 0.5
+  },
+  "path_col": "audio_path",
+  "label_col": "label",
+  "train_csv": "/content/drive/MyDrive/multimodal_engagement/data/processed/audio_train.csv",
+  "val_csv": "/content/drive/MyDrive/multimodal_engagement/data/processed/audio_val.csv",
+  "test_csv": "/content/drive/MyDrive/multimodal_engagement/data/processed/audio_test.csv"
+}

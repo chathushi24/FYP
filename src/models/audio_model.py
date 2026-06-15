@@ -1,97 +1,91 @@
-import os
-import json
 import argparse
 from pathlib import Path
-from datetime import datetime
 
-import numpy as np
 import joblib
+import numpy as np
+import pandas as pd
 
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
-from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report
-
-
-def load_labels(labels_txt: str):
-    labels = Path(labels_txt).read_text(encoding="utf-8").splitlines()
-    labels = [x.strip() for x in labels if x.strip()]
-    return labels
+from src.utils.config import LABEL_ORDER
 
 
-def evaluate(model, name, X, y, labels):
-    pred = model.predict(X)
-    acc = accuracy_score(y, pred)
-    print(f"\n===== {name} Accuracy: {acc:.4f} =====")
-    print(classification_report(y, pred, target_names=labels))
-    return acc
+def load_audio_model(model_path: str):
+    model_path = Path(model_path)
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Audio model not found: {model_path}")
+
+    return joblib.load(model_path)
+
+
+def predict_audio_probabilities(
+    model,
+    X: np.ndarray,
+    sample_ids: list[str],
+    audio_paths: list[str],
+    emotions: list[str],
+    output_csv: str,
+    split_name: str = "demo",
+):
+    probabilities = model.predict_proba(X)
+    predictions = model.predict(X)
+    model_classes = list(model.classes_)
+
+    output = pd.DataFrame(
+        {
+            "sample_id": sample_ids,
+            "audio_path": audio_paths,
+            "emotion": emotions,
+        }
+    )
+
+    for emotion in LABEL_ORDER:
+        if emotion in model_classes:
+            idx = model_classes.index(emotion)
+            output[f"audio_prob_{emotion}"] = probabilities[:, idx]
+        else:
+            output[f"audio_prob_{emotion}"] = 0.0
+
+    output["audio_predicted_emotion"] = predictions
+    output["audio_model"] = "final_selected_audio_model"
+    output["split"] = split_name
+
+    Path(output_csv).parent.mkdir(parents=True, exist_ok=True)
+    output.to_csv(output_csv, index=False)
+
+    print("Saved audio probabilities:", output_csv)
+    return output
 
 
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--feat_dir", required=True, help="Folder containing X_train.npy, y_train.npy, ... and labels.txt")
-    ap.add_argument("--out_dir", required=True, help="Where to save model + metadata")
+    parser = argparse.ArgumentParser()
 
-    ap.add_argument("--C", type=float, default=20.0)
-    ap.add_argument("--gamma", default="scale")
-    ap.add_argument("--seed", type=int, default=42)
-    args = ap.parse_args()
+    parser.add_argument("--model-path", required=True)
+    parser.add_argument("--x-path", required=True)
+    parser.add_argument("--metadata-csv", required=True)
+    parser.add_argument("--output-csv", required=True)
+    parser.add_argument("--split", default="demo")
 
-    feat_dir = Path(args.feat_dir)
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    args = parser.parse_args()
 
-    X_train = np.load(feat_dir / "X_train.npy")
-    y_train = np.load(feat_dir / "y_train.npy")
-    X_val = np.load(feat_dir / "X_val.npy")
-    y_val = np.load(feat_dir / "y_val.npy")
-    X_test = np.load(feat_dir / "X_test.npy")
-    y_test = np.load(feat_dir / "y_test.npy")
+    model = load_audio_model(args.model_path)
+    X = np.load(args.x_path)
+    metadata = pd.read_csv(args.metadata_csv)
 
-    labels = load_labels(str(feat_dir / "labels.txt"))
+    required_cols = ["sample_id", "audio_path", "emotion"]
+    missing = [c for c in required_cols if c not in metadata.columns]
 
-    svm = Pipeline([
-        ("scaler", StandardScaler()),
-        ("svm", SVC(
-            kernel="rbf",
-            C=args.C,
-            gamma=args.gamma,
-            class_weight="balanced",
-            probability=True,
-            random_state=args.seed
-        ))
-    ])
+    if missing:
+        raise ValueError(f"metadata_csv is missing columns: {missing}")
 
-    svm.fit(X_train, y_train)
-
-    val_acc = evaluate(svm, "VAL", X_val, y_val, labels)
-    test_acc = evaluate(svm, "TEST", X_test, y_test, labels)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    prefix = f"hubert_svm_{timestamp}"
-
-    model_path = out_dir / f"{prefix}.joblib"
-    joblib.dump(svm, model_path)
-
-    meta = {
-        "model_type": "HuBERT + SVM",
-        "timestamp": timestamp,
-        "C": args.C,
-        "gamma": args.gamma,
-        "seed": args.seed,
-        "val_accuracy": float(val_acc),
-        "test_accuracy": float(test_acc),
-        "labels_order": labels,
-        "feature_dim": int(X_train.shape[1]),
-        "notes": "Training pipeline matches audio_training (2).ipynb: HuBERT mean+std windows -> StandardScaler -> SVC(RBF)"
-    }
-
-    meta_path = out_dir / f"{prefix}_meta.json"
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, indent=2)
-
-    print("\n✅ Saved model:", model_path)
-    print("✅ Saved meta :", meta_path)
+    predict_audio_probabilities(
+        model=model,
+        X=X,
+        sample_ids=metadata["sample_id"].astype(str).tolist(),
+        audio_paths=metadata["audio_path"].astype(str).tolist(),
+        emotions=metadata["emotion"].astype(str).tolist(),
+        output_csv=args.output_csv,
+        split_name=args.split,
+    )
 
 
 if __name__ == "__main__":

@@ -1,67 +1,120 @@
-import os
-import cv2
 import argparse
+import os
+from pathlib import Path
+
+import cv2
 import pandas as pd
 from tqdm import tqdm
-from sklearn.model_selection import train_test_split
 
-from src.utils import config
+from src.utils.config import EMOTION_MAP
 
 
-# --- Face detector (OpenCV Haar) ---
-# This is the easiest to install. Good enough for prototype.
 CASCADE_PATH = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
 FACE_CASCADE = cv2.CascadeClassifier(CASCADE_PATH)
 
 
-def ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-
-
-def video_id_from_path(video_path: str) -> str:
-    # e.g., 01-01-02-02-01-01-24.mp4 -> 01-01-02-02-01-01-24
-    return os.path.splitext(os.path.basename(video_path))[0]
-
-
-def extract_faces_from_video(video_path: str, out_dir: str, every_n_frames: int, min_size: int):
+def parse_ravdess_filename(file_path: str) -> dict:
     """
-    Extract face crops from a video and save as jpg.
-    Returns list of saved jpg paths.
+    RAVDESS filename format:
+    01-01-03-01-01-01-01.mp4
+
+    parts:
+    modality, vocal_channel, emotion, intensity, statement, repetition, actor
     """
+    path = Path(file_path)
+    sample_id = path.stem
+    parts = sample_id.split("-")
+
+    if len(parts) != 7:
+        return {
+            "sample_id": sample_id,
+            "emotion": "unknown",
+            "modality_type": "unknown",
+        }
+
+    emotion_code = parts[2]
+    modality_code = parts[0]
+
+    emotion = EMOTION_MAP.get(emotion_code, "unknown")
+    modality_type = "speech" if modality_code == "01" else "song"
+
+    return {
+        "sample_id": sample_id,
+        "emotion": emotion,
+        "modality_type": modality_type,
+    }
+
+
+def find_mp4_files(ravdess_root: str) -> list[str]:
+    root = Path(ravdess_root)
+    return [str(p) for p in root.rglob("*.mp4")]
+
+
+def extract_faces_from_video(
+    video_path: str,
+    output_dir: str,
+    sample_fps: int = 1,
+    max_faces: int = 5,
+    image_size: int = 224,
+) -> list[str]:
+    """
+    Extract face crops from a video file.
+    Saves up to max_faces face images.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     cap = cv2.VideoCapture(video_path)
+
     if not cap.isOpened():
         return []
 
+    video_id = Path(video_path).stem
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
+    if fps is None or fps <= 0:
+        fps = 25
+
+    step = max(int(fps / sample_fps), 1)
+
     saved_paths = []
-    vid_id = video_id_from_path(video_path)
     frame_idx = 0
     face_idx = 0
 
     while True:
-        ok, frame = cap.read()
-        if not ok:
+        success, frame = cap.read()
+
+        if not success:
             break
 
-        if frame_idx % every_n_frames != 0:
+        if frame_idx % step != 0:
             frame_idx += 1
             continue
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = FACE_CASCADE.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5)
 
-        # pick the largest face if multiple
+        faces = FACE_CASCADE.detectMultiScale(
+            gray,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(60, 60),
+        )
+
         if len(faces) > 0:
-            faces = sorted(faces, key=lambda b: b[2] * b[3], reverse=True)
-            x, y, w, h = faces[0]
+            # Choose largest face
+            x, y, w, h = max(faces, key=lambda box: box[2] * box[3])
 
-            if w >= min_size and h >= min_size:
-                face = frame[y:y+h, x:x+w]
-                face = cv2.resize(face, (config.IMG_SIZE, config.IMG_SIZE))
+            face = frame[y : y + h, x : x + w]
+            face = cv2.resize(face, (image_size, image_size))
 
-                out_path = os.path.join(out_dir, f"{vid_id}_f{face_idx:04d}.jpg")
-                cv2.imwrite(out_path, face)
-                saved_paths.append(out_path)
-                face_idx += 1
+            out_path = output_dir / f"{video_id}_face_{face_idx}.jpg"
+            cv2.imwrite(str(out_path), face)
+
+            saved_paths.append(str(out_path))
+            face_idx += 1
+
+            if face_idx >= max_faces:
+                break
 
         frame_idx += 1
 
@@ -69,100 +122,63 @@ def extract_faces_from_video(video_path: str, out_dir: str, every_n_frames: int,
     return saved_paths
 
 
-def build_faces_labeled(video_index_csv: str, out_faces_csv: str, out_faces_dir: str):
-    """
-    Creates faces_labeled.csv with columns:
-      face_path, emotion, video_path, video_id
-    """
-    ensure_dir(out_faces_dir)
-
-    df = pd.read_csv(video_index_csv)
-    # Keep only mp4 rows
-    df = df[df["path"].str.lower().str.endswith(".mp4")].copy()
+def build_video_face_index(
+    ravdess_root: str,
+    output_dir: str,
+    index_csv_path: str,
+    sample_fps: int = 1,
+    max_faces: int = 5,
+):
+    mp4_files = find_mp4_files(ravdess_root)
 
     rows = []
-    for _, r in tqdm(df.iterrows(), total=len(df), desc="Extracting faces"):
-        video_path = r["path"]
-        emotion = r["emotion"]
-        vid_id = video_id_from_path(video_path)
+
+    for video_path in tqdm(mp4_files, desc="Extracting video faces"):
+        metadata = parse_ravdess_filename(video_path)
 
         face_paths = extract_faces_from_video(
             video_path=video_path,
-            out_dir=out_faces_dir,
-            every_n_frames=config.EVERY_N_FRAMES,
-            min_size=config.FACE_MIN_SIZE
+            output_dir=output_dir,
+            sample_fps=sample_fps,
+            max_faces=max_faces,
         )
 
-        for fp in face_paths:
-            rows.append({
-                "face_path": fp,
-                "emotion": emotion,
-                "video_path": video_path,
-                "video_id": vid_id
-            })
+        for face_path in face_paths:
+            rows.append(
+                {
+                    "sample_id": metadata["sample_id"],
+                    "video_path": video_path,
+                    "face_path": face_path,
+                    "emotion": metadata["emotion"],
+                    "modality_type": metadata["modality_type"],
+                }
+            )
 
-    out_df = pd.DataFrame(rows)
-    ensure_dir(os.path.dirname(out_faces_csv))
-    out_df.to_csv(out_faces_csv, index=False)
-    print(f"✅ Saved: {out_faces_csv}  rows={len(out_df)}")
-    return out_df
+    df = pd.DataFrame(rows)
+    Path(index_csv_path).parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(index_csv_path, index=False)
 
-
-def split_faces_by_video_id(faces_csv: str, out_train: str, out_val: str, out_test: str):
-    """
-    Split by video_id to avoid leakage.
-    """
-    df = pd.read_csv(faces_csv)
-    video_ids = df["video_id"].unique()
-
-    # 70/15/15 split on video ids
-    train_vids, temp_vids = train_test_split(
-        video_ids,
-        test_size=(config.VAL_RATIO + config.TEST_RATIO),
-        random_state=config.RANDOM_SEED,
-        shuffle=True
-    )
-
-    # split temp into val/test
-    val_size = config.VAL_RATIO / (config.VAL_RATIO + config.TEST_RATIO)
-    val_vids, test_vids = train_test_split(
-        temp_vids,
-        test_size=(1 - val_size),
-        random_state=config.RANDOM_SEED,
-        shuffle=True
-    )
-
-    train_df = df[df["video_id"].isin(train_vids)].copy()
-    val_df   = df[df["video_id"].isin(val_vids)].copy()
-    test_df  = df[df["video_id"].isin(test_vids)].copy()
-
-    ensure_dir(os.path.dirname(out_train))
-    train_df.to_csv(out_train, index=False)
-    val_df.to_csv(out_val, index=False)
-    test_df.to_csv(out_test, index=False)
-
-    print("✅ Split saved:")
-    print("  ", out_train, "rows=", len(train_df), "videos=", len(train_vids))
-    print("  ", out_val,   "rows=", len(val_df),   "videos=", len(val_vids))
-    print("  ", out_test,  "rows=", len(test_df),  "videos=", len(test_vids))
+    print("Saved video face index:", index_csv_path)
+    print("Rows:", len(df))
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--index_csv", default=config.RAVDESS_INDEX_CSV)
-    parser.add_argument("--faces_csv", default=config.FACES_LABELED_CSV)
-    parser.add_argument("--faces_dir", default=config.VIDEO_FACES_DIR)
+
+    parser.add_argument("--ravdess-root", required=True)
+    parser.add_argument("--output-dir", default="data/processed/video_faces")
+    parser.add_argument("--index-csv", default="data/processed/video_faces_index.csv")
+    parser.add_argument("--sample-fps", type=int, default=1)
+    parser.add_argument("--max-faces", type=int, default=5)
+
     args = parser.parse_args()
 
-    # 1) build faces_labeled.csv
-    build_faces_labeled(args.index_csv, args.faces_csv, args.faces_dir)
-
-    # 2) split into train/val/test
-    split_faces_by_video_id(
-        faces_csv=args.faces_csv,
-        out_train=config.FACES_TRAIN_CSV,
-        out_val=config.FACES_VAL_CSV,
-        out_test=config.FACES_TEST_CSV
+    build_video_face_index(
+        ravdess_root=args.ravdess_root,
+        output_dir=args.output_dir,
+        index_csv_path=args.index_csv,
+        sample_fps=args.sample_fps,
+        max_faces=args.max_faces,
     )
 
 
